@@ -2,18 +2,21 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
+// Struktur data untuk menampung hasil setiap request
 type Result struct {
 	WorkerID   int
-	JobID      int
 	StatusCode int
 	Duration   time.Duration
 	Err        error
@@ -22,8 +25,12 @@ type Result struct {
 func main() {
 	reader := bufio.NewReader(os.Stdin)
 
+	fmt.Println("=====================================================")
+	fmt.Println("         ELANG ADVANCED HTTP LOAD TESTER           ")
+	fmt.Println("=====================================================")
+
 	// 1. Input URL Target
-	fmt.Print("1. Masukkan URL Target (contoh: http://localhost:8080): ")
+	fmt.Print("1. Masukkan URL Target (contoh: https://example.com): ")
 	targetURL, _ := reader.ReadString('\n')
 	targetURL = strings.TrimSpace(targetURL)
 	if targetURL == "" {
@@ -31,17 +38,33 @@ func main() {
 		return
 	}
 
-	// 2. Input Total Request
-	fmt.Print("2. Masukkan Total Request (contoh: 100): ")
-	totalStr, _ := reader.ReadString('\n')
-	totalRequests, err := strconv.Atoi(strings.TrimSpace(totalStr))
-	if err != nil || totalRequests <= 0 {
-		fmt.Println("Error: Total request harus berupa angka bulat positif!")
+	// 2. Input HTTP Method
+	fmt.Print("2. Masukkan HTTP Method (GET, POST, PUT, DELETE) [Default: GET]: ")
+	method, _ := reader.ReadString('\n')
+	method = strings.ToUpper(strings.TrimSpace(method))
+	if method == "" {
+		method = "GET"
+	}
+
+	// 3. Input HTTP Body (Jika POST/PUT)
+	var bodyData []byte
+	if method == "POST" || method == "PUT" {
+		fmt.Print("   -> Masukkan Payload Body (JSON/Text) [Kosongkan jika tidak ada]: ")
+		bodyStr, _ := reader.ReadString('\n')
+		bodyData = []byte(strings.TrimSpace(bodyStr))
+	}
+
+	// 4. Input Durasi Pengujian
+	fmt.Print("3. Masukkan Durasi Pengujian dalam detik (contoh: 10): ")
+	durationStr, _ := reader.ReadString('\n')
+	durationSec, err := strconv.Atoi(strings.TrimSpace(durationStr))
+	if err != nil || durationSec <= 0 {
+		fmt.Println("Error: Durasi harus berupa angka bulat positif!")
 		return
 	}
 
-	// 3. Input Concurrency / Workers
-	fmt.Print("3. Masukkan Jumlah Workers/Concurrency (contoh: 10): ")
+	// 5. Input Concurrency (Workers)
+	fmt.Print("4. Masukkan Jumlah Workers/Concurrency (contoh: 50): ")
 	workerStr, _ := reader.ReadString('\n')
 	concurrency, err := strconv.Atoi(strings.TrimSpace(workerStr))
 	if err != nil || concurrency <= 0 {
@@ -49,109 +72,209 @@ func main() {
 		return
 	}
 
-	// 4. Input Mode Debug
-	fmt.Print("4. Aktifkan Mode Debug? (y/n): ")
+	// 6. Input Rate Limit (RPS)
+	fmt.Print("5. Masukkan Batas RPS (Requests Per Second) [0 untuk tanpa batas]: ")
+	rpsStr, _ := reader.ReadString('\n')
+	maxRPS, err := strconv.Atoi(strings.TrimSpace(rpsStr))
+	if err != nil || maxRPS < 0 {
+		fmt.Println("Error: RPS harus berupa angka positif atau 0!")
+		return
+	}
+
+	// 7. Input Mode Debug
+	fmt.Print("6. Aktifkan Mode Debug? (y/n): ")
 	debugStr, _ := reader.ReadString('\n')
 	debugStr = strings.ToLower(strings.TrimSpace(debugStr))
 	debugMode := debugStr == "y" || debugStr == "yes"
 
-	// Ringkasan Konfigurasi
-	fmt.Println("\n================ KONFIGURASI ================")
-	fmt.Printf("Target URL   : %s\n", targetURL)
-	fmt.Printf("Total Request: %d\n", totalRequests)
+	// Ringkasan Konfigurasi Sebelum Jalan
+	fmt.Println("\n=================== KONFIGURASI =====================")
+	fmt.Printf("Target URL   : %s (%s)\n", targetURL, method)
+	fmt.Printf("Durasi Uji   : %d detik\n", durationSec)
 	fmt.Printf("Workers Pool : %d\n", concurrency)
+	if maxRPS > 0 {
+		fmt.Printf("Rate Limit   : %d RPS (Maksimum)\n", maxRPS)
+	} else {
+		fmt.Println("Rate Limit   : Unlimited (Hantam Penuh)")
+	}
 	fmt.Printf("Mode Debug   : %t\n", debugMode)
-	fmt.Println("=============================================")
+	fmt.Println("=====================================================")
 	fmt.Println("Memulai pengujian... Tekan Ctrl+C untuk membatalkan.\n")
+
+	// Setup Context dengan batasan waktu durasi pengujian
+	testDuration := time.Duration(durationSec) * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), testDuration)
+	defer cancel()
+
+	results := make(chan Result, 10000) // Buffer besar agar tidak bottleneck di channel
+	var wg sync.WaitGroup
+
+	// Setup HTTP Client
+	client := &http.Client{
+		Timeout: 5 * time.Second, // Timeout per request
+	}
+
+	// Setup Ticker untuk Rate Limiting jika diaktifkan
+	var ticker *time.Ticker
+	if maxRPS > 0 {
+		ticker = time.NewTicker(time.Second / time.Duration(maxRPS))
+		defer ticker.Stop()
+	}
 
 	startTime := time.Now()
 
-	jobs := make(chan int, totalRequests)
-	results := make(chan Result, totalRequests)
-
-	var wg sync.WaitGroup
-	client := &http.Client{
-		Timeout: 5 * time.Second,
-	}
-
-	// Membuat Worker Pool
+	// 1. Memulai Worker Pool
 	for w := 1; w <= concurrency; w++ {
 		wg.Add(1)
-		go worker(w, targetURL, client, jobs, results, &wg)
+		go worker(ctx, w, method, targetURL, bodyData, client, ticker, results, &wg)
 	}
 
-	// Mendistribusikan Job
-	for j := 1; j <= totalRequests; j++ {
-		jobs <- j
-	}
-	close(jobs)
-
-	// Menunggu seluruh worker selesai di background
+	// 2. Goroutine untuk memantau kapan harus menutup channel hasil
 	go func() {
 		wg.Wait()
 		close(results)
 	}()
 
+	// 3. Memproses hasil secara real-time
+	var durations []time.Duration
 	successCount := 0
 	failCount := 0
 	statusCodes := make(map[int]int)
 	errorLog := make(map[string]int)
 
-	// Membaca hasil (sambil menampilkan debug jika aktif)
 	for res := range results {
 		if res.Err != nil {
 			failCount++
 			errorLog[res.Err.Error()]++
 			if debugMode {
-				fmt.Printf("[DEBUG] Worker #%d | Job #%d -> GAGAL: %v\n", res.WorkerID, res.JobID, res.Err)
+				fmt.Printf("[DEBUG] Worker #%d -> GAGAL: %v\n", res.WorkerID, res.Err)
 			}
 		} else {
 			successCount++
+			durations = append(durations, res.Duration)
 			statusCodes[res.StatusCode]++
 			if debugMode {
-				fmt.Printf("[DEBUG] Worker #%d | Job #%d -> SUKSES (Status: %d) [%v]\n", res.WorkerID, res.JobID, res.StatusCode, res.Duration)
+				fmt.Printf("[DEBUG] Worker #%d -> SUKSES (Status: %d) [%v]\n", res.WorkerID, res.StatusCode, res.Duration)
 			}
 		}
 	}
 
-	totalDuration := time.Since(startTime)
+	actualDuration := time.Since(startTime)
 
-	// --- OUTPUT STATISTIK ---
-	fmt.Println("\n================ HASIL AKHIR ================")
-	fmt.Printf("Waktu Pengujian     : %v\n", totalDuration)
-	fmt.Printf("Request Sukses      : %d\n", successCount)
-	fmt.Printf("Request Gagal/Error : %d\n", failCount)
+	// --- KALKULASI STATISTIK LANJUTAN ---
+	var p50, p95, p99 time.Duration
+	var avgDuration time.Duration
+
+	totalRequests := successCount + failCount
+
+	if len(durations) > 0 {
+		// Urutkan durasi untuk menghitung persentil
+		sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
+
+		// Hitung Rata-rata
+		var totalTime time.Duration
+		for _, d := range durations {
+			totalTime += d
+		}
+		avgDuration = totalTime / time.Duration(len(durations))
+
+		// Ambil Nilai Persentil
+		p50 = durations[len(durations)*50/100]
+		p95 = durations[len(durations)*95/100]
+		p99 = durations[len(durations)*99/100]
+	}
+
+	// --- OUTPUT HASIL AKHIR ---
+	fmt.Println("\n==================== HASIL AKHIR ====================")
+	fmt.Printf("Total Waktu Berjalan : %v\n", actualDuration)
+	fmt.Printf("Total Requests Sent  : %d\n", totalRequests)
+	fmt.Printf("Requests Sukses      : %d\n", successCount)
+	fmt.Printf("Requests Gagal       : %d\n", failCount)
+
+	if totalRequests > 0 && actualDuration.Seconds() > 0 {
+		fmt.Printf("Rata-rata RPS Aktual : %.2f req/sec\n", float64(totalRequests)/actualDuration.Seconds())
+	}
+
+	if len(durations) > 0 {
+		fmt.Println("\nAnalisis Latensi (Hanya Request Sukses):")
+		fmt.Printf("  - Rata-rata (Avg)  : %v\n", avgDuration)
+		fmt.Printf("  - p50 (Median)     : %v\n", p50)
+		fmt.Printf("  - p95 (95%% User)   : %v\n", p95)
+		fmt.Printf("  - p99 (99%% User)   : %v (Terlambat)\n", p99)
+	}
 
 	if len(statusCodes) > 0 {
-		fmt.Println("Detail Status Code  :")
+		fmt.Println("\nDetail Status Code   :")
 		for code, count := range statusCodes {
-			fmt.Printf("  - Status %d: %d kali\n", code, count)
+			fmt.Printf("  - Status %d : %d kali\n", code, count)
 		}
 	}
 
 	if len(errorLog) > 0 {
-		fmt.Println("Rincian Error       :")
+		fmt.Println("\nRincian Error/Kegagalan :")
 		for errMsg, count := range errorLog {
 			fmt.Printf("  - [ %d kali ] %s\n", count, errMsg)
 		}
 	}
-	fmt.Println("=============================================")
+	fmt.Println("=====================================================")
 }
 
-func worker(id int, url string, client *http.Client, jobs <-chan int, results chan<- Result, wg *sync.WaitGroup) {
+// Fungsi Worker utama yang berjalan secara paralel
+func worker(ctx context.Context, id int, method, url string, body []byte, client *http.Client, ticker *time.Ticker, results chan<- Result, wg *sync.WaitGroup) {
 	defer wg.Done()
 
-	for jobID := range jobs {
-		reqStart := time.Now()
-		resp, err := client.Get(url)
-		duration := time.Since(reqStart)
+	for {
+		select {
+		case <-ctx.Done():
+			// Berhenti jika durasi waktu pengujian global sudah habis
+			return
+		default:
+			// Jika fitur Rate Limiter (RPS) aktif, tunggu giliran ticker
+			if ticker != nil {
+				<-ticker.C
+			}
 
-		if err != nil {
-			results <- Result{WorkerID: id, JobID: jobID, Err: err, Duration: duration}
-			continue
+			// Buat request baru dengan method kustom dan context
+			req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewBuffer(body))
+			if err != nil {
+				// Jika context dibatalkan saat membuat request, langsung keluar
+				if ctx.Err() != nil {
+					return
+				}
+				results <- Result{WorkerID: id, Err: err}
+				continue
+			}
+
+			// Tambahkan Headers Standar (Agar terlihat seperti browser asli)
+			req.Header.Set("User-Agent", "ElangLoadTester/2.0 (Golang Concurrent Client)")
+			req.Header.Set("Accept", "*/*")
+			if len(body) > 0 {
+				req.Header.Set("Content-Type", "application/json")
+			}
+
+			// Eksekusi Request & Hitung Latensi
+			reqStart := time.Now()
+			resp, err := client.Do(req)
+			duration := time.Since(reqStart)
+
+			if err != nil {
+				// Cek apakah error karena waktu pengujian habis
+				if ctx.Err() != nil {
+					return
+				}
+				results <- Result{WorkerID: id, Err: err, Duration: duration}
+				continue
+			}
+
+			// Bersihkan resource body
+			resp.Body.Close()
+
+			// Kirim hasil ke channel utama
+			results <- Result{
+				WorkerID:   id,
+				StatusCode: resp.StatusCode,
+				Duration:   duration,
+			}
 		}
-
-		resp.Body.Close()
-		results <- Result{WorkerID: id, JobID: jobID, StatusCode: resp.StatusCode, Duration: duration}
 	}
 }
