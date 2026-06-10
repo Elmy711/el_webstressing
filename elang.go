@@ -5,37 +5,64 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
 type Result struct {
+	WorkerID   int
+	JobID      int
 	StatusCode int
 	Duration   time.Duration
 	Err        error
 }
 
 func main() {
-	// --- INPUT MANUAL URL TARGET ---
 	reader := bufio.NewReader(os.Stdin)
-	fmt.Print("Masukkan URL Target (contoh: http://localhost:8080 atau https://google.com): ")
-	targetURL, _ := reader.ReadString('\n')
-	targetURL = strings.TrimSpace(targetURL) // Menghapus karakter enter/spasi di ujung
 
-	// Validasi input sederhana
+	// 1. Input URL Target
+	fmt.Print("1. Masukkan URL Target (contoh: http://localhost:8080): ")
+	targetURL, _ := reader.ReadString('\n')
+	targetURL = strings.TrimSpace(targetURL)
 	if targetURL == "" {
 		fmt.Println("Error: URL tidak boleh kosong!")
 		return
 	}
 
-	// --- KONFIGURASI BEBAN ---
-	totalRequests := 100
-	concurrency := 10
-	// ---------------------------
+	// 2. Input Total Request
+	fmt.Print("2. Masukkan Total Request (contoh: 100): ")
+	totalStr, _ := reader.ReadString('\n')
+	totalRequests, err := strconv.Atoi(strings.TrimSpace(totalStr))
+	if err != nil || totalRequests <= 0 {
+		fmt.Println("Error: Total request harus berupa angka bulat positif!")
+		return
+	}
 
-	fmt.Printf("\nMemulai stress test ke: %s\n", targetURL)
-	fmt.Printf("Total Request: %d | Concurrency (Workers): %d\n\n", totalRequests, concurrency)
+	// 3. Input Concurrency / Workers
+	fmt.Print("3. Masukkan Jumlah Workers/Concurrency (contoh: 10): ")
+	workerStr, _ := reader.ReadString('\n')
+	concurrency, err := strconv.Atoi(strings.TrimSpace(workerStr))
+	if err != nil || concurrency <= 0 {
+		fmt.Println("Error: Jumlah workers harus berupa angka bulat positif!")
+		return
+	}
+
+	// 4. Input Mode Debug
+	fmt.Print("4. Aktifkan Mode Debug? (y/n): ")
+	debugStr, _ := reader.ReadString('\n')
+	debugStr = strings.ToLower(strings.TrimSpace(debugStr))
+	debugMode := debugStr == "y" || debugStr == "yes"
+
+	// Ringkasan Konfigurasi
+	fmt.Println("\n================ KONFIGURASI ================")
+	fmt.Printf("Target URL   : %s\n", targetURL)
+	fmt.Printf("Total Request: %d\n", totalRequests)
+	fmt.Printf("Workers Pool : %d\n", concurrency)
+	fmt.Printf("Mode Debug   : %t\n", debugMode)
+	fmt.Println("=============================================")
+	fmt.Println("Memulai pengujian... Tekan Ctrl+C untuk membatalkan.\n")
 
 	startTime := time.Now()
 
@@ -47,16 +74,19 @@ func main() {
 		Timeout: 5 * time.Second,
 	}
 
+	// Membuat Worker Pool
 	for w := 1; w <= concurrency; w++ {
 		wg.Add(1)
-		go worker(targetURL, client, jobs, results, &wg)
+		go worker(w, targetURL, client, jobs, results, &wg)
 	}
 
+	// Mendistribusikan Job
 	for j := 1; j <= totalRequests; j++ {
 		jobs <- j
 	}
 	close(jobs)
 
+	// Menunggu seluruh worker selesai di background
 	go func() {
 		wg.Wait()
 		close(results)
@@ -65,29 +95,33 @@ func main() {
 	successCount := 0
 	failCount := 0
 	statusCodes := make(map[int]int)
-	
-	// Map untuk mencatat jenis error unik agar terminal tidak penuh jika semua error sama
 	errorLog := make(map[string]int)
 
+	// Membaca hasil (sambil menampilkan debug jika aktif)
 	for res := range results {
 		if res.Err != nil {
 			failCount++
-			// Catat pesan errornya
 			errorLog[res.Err.Error()]++
+			if debugMode {
+				fmt.Printf("[DEBUG] Worker #%d | Job #%d -> GAGAL: %v\n", res.WorkerID, res.JobID, res.Err)
+			}
 		} else {
 			successCount++
 			statusCodes[res.StatusCode]++
+			if debugMode {
+				fmt.Printf("[DEBUG] Worker #%d | Job #%d -> SUKSES (Status: %d) [%v]\n", res.WorkerID, res.JobID, res.StatusCode, res.Duration)
+			}
 		}
 	}
 
 	totalDuration := time.Since(startTime)
 
 	// --- OUTPUT STATISTIK ---
-	fmt.Println("\n================ STATISTIK ================")
+	fmt.Println("\n================ HASIL AKHIR ================")
 	fmt.Printf("Waktu Pengujian     : %v\n", totalDuration)
 	fmt.Printf("Request Sukses      : %d\n", successCount)
 	fmt.Printf("Request Gagal/Error : %d\n", failCount)
-	
+
 	if len(statusCodes) > 0 {
 		fmt.Println("Detail Status Code  :")
 		for code, count := range statusCodes {
@@ -96,29 +130,28 @@ func main() {
 	}
 
 	if len(errorLog) > 0 {
-		fmt.Println("Log Error Terjadi   :")
+		fmt.Println("Rincian Error       :")
 		for errMsg, count := range errorLog {
 			fmt.Printf("  - [ %d kali ] %s\n", count, errMsg)
 		}
 	}
-	fmt.Println("===========================================")
+	fmt.Println("=============================================")
 }
 
-func worker(url string, client *http.Client, jobs <-chan int, results chan<- Result, wg *sync.WaitGroup) {
+func worker(id int, url string, client *http.Client, jobs <-chan int, results chan<- Result, wg *sync.WaitGroup) {
 	defer wg.Done()
 
-	for range jobs {
+	for jobID := range jobs {
 		reqStart := time.Now()
 		resp, err := client.Get(url)
 		duration := time.Since(reqStart)
 
 		if err != nil {
-			results <- Result{Err: err, Duration: duration}
+			results <- Result{WorkerID: id, JobID: jobID, Err: err, Duration: duration}
 			continue
 		}
 
 		resp.Body.Close()
-		results <- Result{StatusCode: resp.StatusCode, Duration: duration}
+		results <- Result{WorkerID: id, JobID: jobID, StatusCode: resp.StatusCode, Duration: duration}
 	}
 }
-
