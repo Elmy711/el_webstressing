@@ -14,7 +14,6 @@ import (
 	"time"
 )
 
-// Struktur data untuk menampung hasil setiap request
 type Result struct {
 	WorkerID   int
 	StatusCode int
@@ -26,7 +25,7 @@ func main() {
 	reader := bufio.NewReader(os.Stdin)
 
 	fmt.Println("=====================================================")
-	fmt.Println("         ELANG ADVANCED HTTP LOAD TESTER           ")
+	fmt.Println("        ADVANCED ELANG HTTP LOAD TESTER            ")
 	fmt.Println("=====================================================")
 
 	// 1. Input URL Target
@@ -46,16 +45,16 @@ func main() {
 		method = "GET"
 	}
 
-	// 3. Input HTTP Body (Jika POST/PUT)
+	// 3. Input HTTP Body (Hanya jika POST/PUT)
 	var bodyData []byte
 	if method == "POST" || method == "PUT" {
-		fmt.Print("   -> Masukkan Payload Body (JSON/Text) [Kosongkan jika tidak ada]: ")
+		fmt.Print("   -> Masukkan Payload Body (JSON) [Kosongkan jika tidak ada]: ")
 		bodyStr, _ := reader.ReadString('\n')
 		bodyData = []byte(strings.TrimSpace(bodyStr))
 	}
 
 	// 4. Input Durasi Pengujian
-	fmt.Print("3. Masukkan Durasi Pengujian dalam detik (contoh: 10): ")
+	fmt.Print("3. Masukkan Durasi Pengujian dalam detik (contoh: 120): ")
 	durationStr, _ := reader.ReadString('\n')
 	durationSec, err := strconv.Atoi(strings.TrimSpace(durationStr))
 	if err != nil || durationSec <= 0 {
@@ -87,13 +86,13 @@ func main() {
 	debugStr = strings.ToLower(strings.TrimSpace(debugStr))
 	debugMode := debugStr == "y" || debugStr == "yes"
 
-	// Ringkasan Konfigurasi Sebelum Jalan
+	// Ringkasan Konfigurasi
 	fmt.Println("\n=================== KONFIGURASI =====================")
 	fmt.Printf("Target URL   : %s (%s)\n", targetURL, method)
 	fmt.Printf("Durasi Uji   : %d detik\n", durationSec)
 	fmt.Printf("Workers Pool : %d\n", concurrency)
 	if maxRPS > 0 {
-		fmt.Printf("Rate Limit   : %d RPS (Maksimum)\n", maxRPS)
+		fmt.Printf("Rate Limit   : %d RPS\n", maxRPS)
 	} else {
 		fmt.Println("Rate Limit   : Unlimited (Hantam Penuh)")
 	}
@@ -101,20 +100,26 @@ func main() {
 	fmt.Println("=====================================================")
 	fmt.Println("Memulai pengujian... Tekan Ctrl+C untuk membatalkan.\n")
 
-	// Setup Context dengan batasan waktu durasi pengujian
 	testDuration := time.Duration(durationSec) * time.Second
 	ctx, cancel := context.WithTimeout(context.Background(), testDuration)
 	defer cancel()
 
-	results := make(chan Result, 10000) // Buffer besar agar tidak bottleneck di channel
+	results := make(chan Result, 50000) // Buffer diperbesar untuk mengantisipasi ribuan request instant
 	var wg sync.WaitGroup
 
-	// Setup HTTP Client
-	client := &http.Client{
-		Timeout: 5 * time.Second, // Timeout per request
+	// Perbaikan: Kustomisasi Transport untuk memaksa pembersihan koneksi lama
+	transport := &http.Transport{
+		MaxIdleConns:        concurrency,
+		MaxIdleConnsPerHost: concurrency,
+		IdleConnTimeout:     30 * time.Second,
+		DisableKeepAlives:   maxRPS == 0, // Jika mode brutal/unlimited, matikan keep-alive agar port tidak macet
 	}
 
-	// Setup Ticker untuk Rate Limiting jika diaktifkan
+	client := &http.Client{
+		Timeout:   5 * time.Second,
+		Transport: transport,
+	}
+
 	var ticker *time.Ticker
 	if maxRPS > 0 {
 		ticker = time.NewTicker(time.Second / time.Duration(maxRPS))
@@ -123,19 +128,18 @@ func main() {
 
 	startTime := time.Now()
 
-	// 1. Memulai Worker Pool
+	// Memulai Worker Pool
 	for w := 1; w <= concurrency; w++ {
 		wg.Add(1)
 		go worker(ctx, w, method, targetURL, bodyData, client, ticker, results, &wg)
 	}
 
-	// 2. Goroutine untuk memantau kapan harus menutup channel hasil
+	// Menunggu seluruh worker selesai
 	go func() {
 		wg.Wait()
 		close(results)
 	}()
 
-	// 3. Memproses hasil secara real-time
 	var durations []time.Duration
 	successCount := 0
 	failCount := 0
@@ -164,21 +168,17 @@ func main() {
 	// --- KALKULASI STATISTIK LANJUTAN ---
 	var p50, p95, p99 time.Duration
 	var avgDuration time.Duration
-
 	totalRequests := successCount + failCount
 
 	if len(durations) > 0 {
-		// Urutkan durasi untuk menghitung persentil
 		sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
 
-		// Hitung Rata-rata
 		var totalTime time.Duration
 		for _, d := range durations {
 			totalTime += d
 		}
 		avgDuration = totalTime / time.Duration(len(durations))
 
-		// Ambil Nilai Persentil
 		p50 = durations[len(durations)*50/100]
 		p95 = durations[len(durations)*95/100]
 		p99 = durations[len(durations)*99/100]
@@ -219,25 +219,21 @@ func main() {
 	fmt.Println("=====================================================")
 }
 
-// Fungsi Worker utama yang berjalan secara paralel
 func worker(ctx context.Context, id int, method, url string, body []byte, client *http.Client, ticker *time.Ticker, results chan<- Result, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	for {
 		select {
 		case <-ctx.Done():
-			// Berhenti jika durasi waktu pengujian global sudah habis
 			return
 		default:
-			// Jika fitur Rate Limiter (RPS) aktif, tunggu giliran ticker
 			if ticker != nil {
 				<-ticker.C
 			}
 
-			// Buat request baru dengan method kustom dan context
+			// Perbaikan krusial: Memastikan request dibentuk bersih menggunakan variabel 'url' lokal dari parameter fungsi
 			req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewBuffer(body))
 			if err != nil {
-				// Jika context dibatalkan saat membuat request, langsung keluar
 				if ctx.Err() != nil {
 					return
 				}
@@ -245,20 +241,21 @@ func worker(ctx context.Context, id int, method, url string, body []byte, client
 				continue
 			}
 
-			// Tambahkan Headers Standar (Agar terlihat seperti browser asli)
-			req.Header.Set("User-Agent", "ElangLoadTester/2.0 (Golang Concurrent Client)")
-			req.Header.Set("Accept", "*/*")
-			if len(body) > 0 {
+			// Headers Standar Berorientasi Browser
+			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+			req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
+			req.Header.Set("Accept-Language", "en-US,en;q=0.5")
+			
+			// Perbaikan Logika: Header Content-Type JSON HANYA dipasang jika method-nya POST/PUT dan body terisi
+			if (method == "POST" || method == "PUT") && len(body) > 0 {
 				req.Header.Set("Content-Type", "application/json")
 			}
 
-			// Eksekusi Request & Hitung Latensi
 			reqStart := time.Now()
 			resp, err := client.Do(req)
 			duration := time.Since(reqStart)
 
 			if err != nil {
-				// Cek apakah error karena waktu pengujian habis
 				if ctx.Err() != nil {
 					return
 				}
@@ -266,10 +263,8 @@ func worker(ctx context.Context, id int, method, url string, body []byte, client
 				continue
 			}
 
-			// Bersihkan resource body
 			resp.Body.Close()
 
-			// Kirim hasil ke channel utama
 			results <- Result{
 				WorkerID:   id,
 				StatusCode: resp.StatusCode,
