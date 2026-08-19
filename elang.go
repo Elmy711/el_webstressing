@@ -151,14 +151,14 @@ func main() {
 			failCount++
 			errorLog[res.Err.Error()]++
 			if debugMode {
-				fmt.Printf("[DEBUG] Worker #%d -> GAGAL: %v\n", res.WorkerID, res.Err)
+				fmt.Printf("[⏳] 🚀#%d -> GAGAL: %v\n", res.WorkerID, res.Err)
 			}
 		} else {
 			successCount++
 			durations = append(durations, res.Duration)
 			statusCodes[res.StatusCode]++
 			if debugMode {
-				fmt.Printf("[DEBUG] Worker #%d -> SUKSES (Status: %d) [%v]\n", res.WorkerID, res.StatusCode, res.Duration)
+				fmt.Printf("[⏳] 🚀 #%d -> SUKSES (Status: %d) [%v]\n", res.WorkerID, res.StatusCode, res.Duration)
 			}
 		}
 	}
@@ -185,7 +185,7 @@ func main() {
 	}
 
 	// --- OUTPUT HASIL AKHIR ---
-	fmt.Println("\n==================== HASIL AKHIR ====================")
+	fmt.Println("\n==================== STATISTIK ====================")
 	fmt.Printf("Total Waktu Berjalan : %v\n", actualDuration)
 	fmt.Printf("Total Requests Sent  : %d\n", totalRequests)
 	fmt.Printf("Requests Sukses      : %d\n", successCount)
