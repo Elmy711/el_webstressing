@@ -151,14 +151,14 @@ func main() {
 			failCount++
 			errorLog[res.Err.Error()]++
 			if debugMode {
-				fmt.Printf(" 📕 #%d -> GAGAL: %v\n", res.WorkerID, res.Err)
+				fmt.Printf(" 📕 #%d -> GAGAL : %v\n", res.WorkerID, res.Err)
 			}
 		} else {
 			successCount++
 			durations = append(durations, res.Duration)
 			statusCodes[res.StatusCode]++
 			if debugMode {
-				fmt.Printf(" 📗 #%d -> SUKSES (Status: %d) [%v]\n", res.WorkerID, res.StatusCode, res.Duration)
+				fmt.Printf(" 📗 #%d -> SUKSES : %d [%v]\n", res.WorkerID, res.StatusCode, res.Duration)
 			}
 		}
 	}
