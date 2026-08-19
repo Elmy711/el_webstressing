@@ -196,7 +196,7 @@ func main() {
 	}
 
 	if len(durations) > 0 {
-		fmt.Println("\nAnalisis Latensi (Hanya Request Sukses):")
+		fmt.Println("\nAnalisis Latensi :")
 		fmt.Printf("  - Rata-rata (Avg)  : %v\n", avgDuration)
 		fmt.Printf("  - p50 (Median)     : %v\n", p50)
 		fmt.Printf("  - p95 (95%% User)   : %v\n", p95)
