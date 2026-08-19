@@ -29,7 +29,7 @@ func main() {
 	fmt.Println("=====================================================")
 
 	// 1. Input URL Target
-	fmt.Print("1. Masukkan URL Target (contoh: https://example.com): ")
+	fmt.Print("1. URL Target : ")
 	targetURL, _ := reader.ReadString('\n')
 	targetURL = strings.TrimSpace(targetURL)
 	if targetURL == "" {
@@ -38,7 +38,7 @@ func main() {
 	}
 
 	// 2. Input HTTP Method
-	fmt.Print("2. Masukkan HTTP Method (GET, POST, PUT, DELETE) [Default: GET]: ")
+	fmt.Print("2. HTTP Method (GET, POST, PUT, DELETE) : ")
 	method, _ := reader.ReadString('\n')
 	method = strings.ToUpper(strings.TrimSpace(method))
 	if method == "" {
@@ -48,13 +48,13 @@ func main() {
 	// 3. Input HTTP Body (Hanya jika POST/PUT)
 	var bodyData []byte
 	if method == "POST" || method == "PUT" {
-		fmt.Print("   -> Masukkan Payload Body (JSON) [Kosongkan jika tidak ada]: ")
+		fmt.Print("   -> Payload Body (JSON) [Kosongkan jika tidak ada]: ")
 		bodyStr, _ := reader.ReadString('\n')
 		bodyData = []byte(strings.TrimSpace(bodyStr))
 	}
 
 	// 4. Input Durasi Pengujian
-	fmt.Print("3. Masukkan Durasi Pengujian dalam detik (contoh: 120): ")
+	fmt.Print("3. Durasi : ")
 	durationStr, _ := reader.ReadString('\n')
 	durationSec, err := strconv.Atoi(strings.TrimSpace(durationStr))
 	if err != nil || durationSec <= 0 {
@@ -63,7 +63,7 @@ func main() {
 	}
 
 	// 5. Input Concurrency (Workers)
-	fmt.Print("4. Masukkan Jumlah Workers/Concurrency (contoh: 50): ")
+	fmt.Print("4. Workers : ")
 	workerStr, _ := reader.ReadString('\n')
 	concurrency, err := strconv.Atoi(strings.TrimSpace(workerStr))
 	if err != nil || concurrency <= 0 {
@@ -72,7 +72,7 @@ func main() {
 	}
 
 	// 6. Input Rate Limit (RPS)
-	fmt.Print("5. Masukkan Batas RPS (Requests Per Second) [0 untuk tanpa batas]: ")
+	fmt.Print("5. RPS [0 untuk tanpa batas]: ")
 	rpsStr, _ := reader.ReadString('\n')
 	maxRPS, err := strconv.Atoi(strings.TrimSpace(rpsStr))
 	if err != nil || maxRPS < 0 {
@@ -81,16 +81,16 @@ func main() {
 	}
 
 	// 7. Input Mode Debug
-	fmt.Print("6. Aktifkan Mode Debug? (y/n): ")
+	fmt.Print("6. Mode Debug? (y/n): ")
 	debugStr, _ := reader.ReadString('\n')
 	debugStr = strings.ToLower(strings.TrimSpace(debugStr))
 	debugMode := debugStr == "y" || debugStr == "yes"
 
 	// Ringkasan Konfigurasi
 	fmt.Println("\n=================== KONFIGURASI =====================")
-	fmt.Printf("Target URL   : %s (%s)\n", targetURL, method)
-	fmt.Printf("Durasi Uji   : %d detik\n", durationSec)
-	fmt.Printf("Workers Pool : %d\n", concurrency)
+	fmt.Printf("Target    : %s (%s)\n", targetURL, method)
+	fmt.Printf("Durasi   : %d detik\n", durationSec)
+	fmt.Printf("Workers  : %d\n", concurrency)
 	if maxRPS > 0 {
 		fmt.Printf("Rate Limit   : %d RPS\n", maxRPS)
 	} else {
@@ -98,7 +98,7 @@ func main() {
 	}
 	fmt.Printf("Mode Debug   : %t\n", debugMode)
 	fmt.Println("=====================================================")
-	fmt.Println("Memulai pengujian... Tekan Ctrl+C untuk membatalkan.\n")
+	fmt.Println("Mulai .... Tekan Ctrl+C untuk membatalkan.\n")
 
 	testDuration := time.Duration(durationSec) * time.Second
 	ctx, cancel := context.WithTimeout(context.Background(), testDuration)
@@ -204,14 +204,14 @@ func main() {
 	}
 
 	if len(statusCodes) > 0 {
-		fmt.Println("\nDetail Status Code   :")
+		fmt.Println("\nStatus Code   :")
 		for code, count := range statusCodes {
 			fmt.Printf("  - Status %d : %d kali\n", code, count)
 		}
 	}
 
 	if len(errorLog) > 0 {
-		fmt.Println("\nRincian Error/Kegagalan :")
+		fmt.Println("\nRincian Error :")
 		for errMsg, count := range errorLog {
 			fmt.Printf("  - [ %d kali ] %s\n", count, errMsg)
 		}
